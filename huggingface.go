@@ -416,13 +416,12 @@ var (
 //
 // Similar to https://huggingface.co/docs/huggingface_hub/package_reference/file_download
 func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, error) {
-	mdlDir, commitish, mdlInfo, err := c.resolveCommit(ctx, ref.ModelRef(), ref.Commitish())
+	mdlDir, commitish, _, err := c.resolveCommit(ctx, ref.ModelRef(), ref.Commitish())
 	if err != nil {
 		return "", err
 	}
-	ref = MakePackedFileRef(ref.Author(), ref.Repo(), commitish, ref.Basename())
 	// Replace the revision with the one we found.
-	_ = mdlInfo
+	ref = MakePackedFileRef(ref.Author(), ref.Repo(), commitish, ref.Basename())
 	snapshotDir := filepath.Join(mdlDir, "snapshots", commitish)
 	if err = os.MkdirAll(snapshotDir, 0o777); err != nil {
 		return "", err
@@ -448,6 +447,7 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 	if err != nil {
 		return "", err
 	}
+	// TODO: subdirectories.
 	if err = os.Symlink(rel, ln); err != nil {
 		return "", err
 	}
@@ -459,14 +459,73 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 // Similar to
 // https://huggingface.co/docs/huggingface_hub/package_reference/file_download#huggingface_hub.snapshot_download
 func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision string, glob []string) ([]string, error) {
+	for _, g := range glob {
+		if strings.HasPrefix(g, "/") || strings.HasPrefix(g, "\\") || strings.Contains(g, "..") {
+			return nil, fmt.Errorf("refusing glob %q", g)
+		}
+	}
 	mdlDir, commitish, mdlInfo, err := c.resolveCommit(ctx, ref, revision)
 	if err != nil {
 		return nil, err
 	}
-	_ = mdlDir
-	_ = commitish
-	_ = mdlInfo
-	return nil, errors.New("implement me")
+	// For now, always do an HTTP request to make sure we know exactly which files we are looking for.
+	if mdlInfo == nil {
+		mdlInfo = &Model{ModelRef: ref}
+		if err = c.GetModelInfo(ctx, mdlInfo, commitish); err != nil {
+			return nil, err
+		}
+	}
+	var desired []string
+	if len(glob) == 0 {
+		desired = mdlInfo.Files
+	} else {
+		for _, f := range mdlInfo.Files {
+			for _, g := range glob {
+				m, err := filepath.Match(g, f)
+				if err != nil {
+					return nil, fmt.Errorf("glob %q is invalid: %w", g, err)
+				}
+				if m {
+					desired = append(desired, f)
+					break
+				}
+			}
+		}
+	}
+	if len(desired) == 0 {
+		return nil, fmt.Errorf("no file matched the globs %q", glob)
+	}
+	snapshotDir := filepath.Join(mdlDir, "snapshots", commitish)
+	if err = os.MkdirAll(snapshotDir, 0o777); err != nil {
+		return nil, err
+	}
+	// TODO: Download 4 files simultaneously.
+	var out []string
+	for _, f := range desired {
+		ln := filepath.Join(snapshotDir, f)
+		if _, err = os.Stat(ln); err != nil {
+			// We have to download it.
+			_, etag, _, err := c.GetFileInfo(ctx, MakePackedFileRef(ref.Author, ref.Repo, commitish, f))
+			if err != nil {
+				return nil, err
+			}
+			blob := filepath.Join(mdlDir, "blobs", etag)
+			url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + commitish + "/" + f + "?download=true"
+			if err = DownloadFile(ctx, url, blob, c.token); err != nil {
+				return nil, err
+			}
+			rel, err := filepath.Rel(filepath.Dir(ln), blob)
+			if err != nil {
+				return nil, err
+			}
+			// TODO: subdirectories.
+			if err = os.Symlink(rel, ln); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, ln)
+	}
+	return out, nil
 }
 
 // GetFileInfo retrieves the information about the file.
