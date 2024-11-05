@@ -40,9 +40,10 @@ type PackedFileRef string
 
 // RepoID returns the canonical "<author>/<repo>" for this repository.
 func (p PackedFileRef) RepoID() string {
-	if i := strings.LastIndexByte(string(p), '/'); i != -1 {
-		if i = strings.LastIndexByte(string(p[:i]), '/'); i != -1 {
-			return strings.TrimPrefix(string(p)[:i], "hf:")
+	s := string(p)
+	if i := strings.IndexByte(s, '/'); i != -1 {
+		if j := strings.IndexByte(s[i+1:], '/'); j != -1 {
+			return strings.TrimPrefix(s[:i+j+1], "hf:")
 		}
 	}
 	return ""
@@ -50,28 +51,34 @@ func (p PackedFileRef) RepoID() string {
 
 // Author returns the <author> part of the packed reference.
 func (p PackedFileRef) Author() string {
-	if i := strings.IndexByte(string(p), '/'); i != -1 {
-		return strings.TrimPrefix(string(p)[:i], "hf:")
+	s := string(p)
+	if i := strings.IndexByte(s, '/'); i != -1 {
+		return strings.TrimPrefix(s[:i], "hf:")
 	}
 	return ""
 }
 
 // Repo returns the <repo> part of the packed reference.
 func (p PackedFileRef) Repo() string {
-	if i := strings.IndexByte(string(p), '/'); i != -1 {
-		if j := strings.IndexByte(string(p)[i+1:], '/'); j != -1 {
-			return string(p)[i+1 : i+1+j]
+	s := string(p)
+	if i := strings.IndexByte(s, '/'); i != -1 {
+		s = s[i+1:]
+		if i = strings.IndexByte(s, '/'); i != -1 {
+			return s[:i]
 		}
 	}
 	return ""
 }
 
-// Commish returns the HEAD part of the packed reference.
-func (p PackedFileRef) Commish() string {
-	if i := strings.IndexByte(string(p), '/'); i != -1 {
-		if j := strings.IndexByte(string(p)[i+1:], '/'); j != -1 {
-			if k := strings.IndexByte(string(p)[j+1:], '/'); k != -1 {
-				return string(p)[i+j+1 : i+1+j+k]
+// Commitish returns the HEAD part of the packed reference.
+func (p PackedFileRef) Commitish() string {
+	s := string(p)
+	if i := strings.IndexByte(s, '/'); i != -1 {
+		s = s[i+1:]
+		if i = strings.IndexByte(s, '/'); i != -1 {
+			s = s[i+1:]
+			if i = strings.IndexByte(s, '/'); i != -1 {
+				return s[:i]
 			}
 		}
 	}
@@ -367,7 +374,7 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 	// Look if there's a ref already there.
 	commitish := ""
 	etag := ""
-	cmtPath := filepath.Join(mdlDir, "refs", ref.Commish())
+	cmtPath := filepath.Join(mdlDir, "refs", ref.Commitish())
 	if b, err := ioutil.ReadFile(cmtPath); err == nil {
 		commitish = string(bytes.TrimSpace(b))
 		if !reCommit.MatchString(commitish) {
@@ -388,11 +395,12 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 	// Symlink is present?
 	ln := filepath.Join(snapshotDir, ref.Basename())
 	if _, err := os.Stat(ln); err == nil {
+		slog.Info("hf", "ensure_file", ref, "commit", commitish, "ln", ln)
 		return ln, err
 	}
 	// We have to download it.
 	blob := filepath.Join(mdlDir, "blobs", etag)
-	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + ref.Commish() + "/" + ref.Basename() + "?download=true"
+	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + ref.Commitish() + "/" + ref.Basename() + "?download=true"
 	if err = DownloadFile(ctx, url, blob, c.token); err != nil {
 		return "", err
 	}
@@ -411,13 +419,14 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 // Returns the commitish, etag, size.
 func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, string, int64, error) {
 	hdr := map[string]string{"Accept-Encoding": "identity"}
-	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + ref.Commish() + "/" + ref.Basename() + "?download=true"
-	resp, err := authGet(ctx, "GET", url, c.token, hdr)
+	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + ref.Commitish() + "/" + ref.Basename() + "?download=true"
+	resp, err := authGet(ctx, "HEAD", url, c.token, hdr)
 	if err != nil {
 		return "", "", 0, err
 	}
 	_, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
+	slog.Info("hf", "file_info", ref, "hdr", resp.Header)
 	commitIsh := resp.Header.Get("X-Repo-Commit")
 	if commitIsh == "" {
 		return "", "", 0, errors.New("missing header X-Repo-Commit")
@@ -440,7 +449,7 @@ func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, st
 		return "", "", 0, fmt.Errorf("invalid header X-Linked-Size %q", sizeStr)
 	}
 	//resp.Header.Get("Location") or url
-	slog.Info("hf", "file_info", "ref", ref, "commit", commitIsh, "etag", etag, "size", size)
+	slog.Info("hf", "file_info", ref, "commit", commitIsh, "etag", etag, "size", size)
 	return commitIsh, etag, size, nil
 }
 
@@ -448,7 +457,7 @@ func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, st
 //
 // Makes sure blobs/, refs/ and snapshots/ exist.
 func (c *Client) prepareModelCache(repoID string) (string, error) {
-	name := "models--" + strings.ReplaceAll(repoID, "/", "-")
+	name := "models--" + strings.ReplaceAll(repoID, "/", "--")
 	mdlDir := filepath.Join(c.hubCacheDir, name)
 	for _, n := range []string{"blobs", "refs", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(mdlDir, n), 0o777); err != nil {
@@ -466,7 +475,6 @@ func (c *Client) prepareModelCache(repoID string) (string, error) {
 //
 // It prints a progress bar if the file is at least 100kiB.
 func DownloadFile(ctx context.Context, url, dst string, token string) error {
-	slog.Info("hf", "downloading", url)
 	resp, err := authGet(ctx, "GET", url, token, nil)
 	if err != nil {
 		return fmt.Errorf("failed to download %q: %w", dst, err)
@@ -480,7 +488,7 @@ func DownloadFile(ctx context.Context, url, dst string, token string) error {
 	defer f.Close()
 
 	// Check if resp.ContentLength is small and skip output in this case.
-	if resp.ContentLength >= 100*1024 {
+	if resp.ContentLength == 0 || resp.ContentLength >= 100*1024 {
 		bar := progressbar.DefaultBytes(resp.ContentLength, "downloading")
 		_, err = io.Copy(io.MultiWriter(f, bar), resp.Body)
 	} else {
@@ -493,6 +501,7 @@ func DownloadFile(ctx context.Context, url, dst string, token string) error {
 //
 // Method must be HEAD or GET.
 func authGet(ctx context.Context, method, url, token string, hdr map[string]string) (*http.Response, error) {
+	slog.Info("hf", method, url)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		// Unlikely.
@@ -511,18 +520,18 @@ func authGet(ctx context.Context, method, url, token string, hdr map[string]stri
 			_ = resp.Body.Close()
 			if resp.StatusCode == 401 {
 				if token != "" {
-					return nil, fmt.Errorf("double check if your token is valid: %s", resp.Status)
+					return nil, fmt.Errorf("request %s: double check if your token is valid: %s", url, resp.Status)
 				}
-				return nil, fmt.Errorf("a valid token is likely required: %s", resp.Status)
+				return nil, fmt.Errorf("request %s: a valid token is likely required: %s", url, resp.Status)
 			}
 			if resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
 				// Sleep and retry.
 				time.Sleep(time.Duration(i+1) * time.Second)
 				continue
 			}
-			return nil, fmt.Errorf("request status: %s", resp.Status)
+			return nil, fmt.Errorf("request %s: status: %s", url, resp.Status)
 		}
 		return resp, err
 	}
-	return nil, errors.New("failed retrying on 429")
+	return nil, fmt.Errorf("request %s: failed retrying on 429", url)
 }

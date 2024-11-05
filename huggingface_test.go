@@ -38,6 +38,9 @@ func TestPackedFileRef(t *testing.T) {
 	if got := p.Basename(); got != "file" {
 		t.Fatal(got)
 	}
+	if got := p.Commitish(); got != "HEAD" {
+		t.Fatal(got)
+	}
 	if got := p.RepoURL(); got != "https://huggingface.co/author/repo" {
 		t.Fatal(got)
 	}
