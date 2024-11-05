@@ -324,7 +324,7 @@ type modelInfoResponse struct {
 	CreatedAt    time.Time      `json:"createdAt"`
 	Disabled     bool           `json:"disabled"`
 	Downloads    int64          `json:"downloads"`
-	Gates        string         `json:"gated"`
+	Gated        any            `json:"gated"` // Sometimes bool (Qwen2), sometimes string (Llama 3.2)
 	ID           string         `json:"id"`
 	LastModified time.Time      `json:"lastModified"`
 	LibraryName  string         `json:"library_name"`
@@ -353,7 +353,7 @@ type modelInfoResponse struct {
 func (c *Client) GetModelInfo(ctx context.Context, m *Model, ref string) error {
 	slog.Info("hf", "model", m.RepoID())
 	url := c.serverBase + "/api/models/" + m.RepoID() + "/revision/" + ref
-	resp, err := authGet(ctx, "GET", url, c.token, nil)
+	resp, err := authGet(ctx, http.DefaultClient, "GET", url, c.token, nil)
 	if err != nil {
 		return fmt.Errorf("failed to list repoID %s: %w", m.RepoID(), err)
 	}
@@ -458,7 +458,13 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, string, int64, error) {
 	hdr := map[string]string{"Accept-Encoding": "identity"}
 	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + ref.Commitish() + "/" + ref.Basename() + "?download=true"
-	resp, err := authGet(ctx, "HEAD", url, c.token, hdr)
+	// We must disable redirect otherwise we get the invalid headers from CloudFront / AmazonS3.
+	h := http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := authGet(ctx, &h, "HEAD", url, c.token, hdr)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -469,16 +475,14 @@ func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, st
 	if commitIsh == "" {
 		return "", "", 0, errors.New("missing header X-Repo-Commit")
 	}
-
 	etag := resp.Header.Get("X-Linked-Etag")
 	if etag == "" {
 		etag = resp.Header.Get("Etag")
 	}
-	// string.Trim(strings.TrimPrefix(etag, "W/"), "\"")
+	etag = strings.Trim(strings.TrimPrefix(etag, "W/"), "\"")
 	if !reSHA256.MatchString(etag) {
 		return "", "", 0, fmt.Errorf("expected sha256 for etag, got %q", etag)
 	}
-
 	sizeStr := resp.Header.Get("X-Linked-Size")
 	if sizeStr == "" {
 		sizeStr = resp.Header.Get("Content-Length")
@@ -546,7 +550,7 @@ func (c *Client) resolveCommit(ctx context.Context, ref ModelRef, commitish stri
 //
 // It prints a progress bar if the file is at least 100kiB.
 func DownloadFile(ctx context.Context, url, dst string, token string) error {
-	resp, err := authGet(ctx, "GET", url, token, nil)
+	resp, err := authGet(ctx, http.DefaultClient, "GET", url, token, nil)
 	if err != nil {
 		return fmt.Errorf("failed to download %q: %w", dst, err)
 	}
@@ -571,7 +575,7 @@ func DownloadFile(ctx context.Context, url, dst string, token string) error {
 // authGet does an authenticated HTTP request with a Bearer token.
 //
 // Method must be HEAD or GET.
-func authGet(ctx context.Context, method, url, token string, hdr map[string]string) (*http.Response, error) {
+func authGet(ctx context.Context, h *http.Client, method, url, token string, hdr map[string]string) (*http.Response, error) {
 	slog.Info("hf", method, url)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
@@ -585,8 +589,8 @@ func authGet(ctx context.Context, method, url, token string, hdr map[string]stri
 		req.Header.Add(k, v)
 	}
 	for i := 0; i < 10; i++ {
-		resp, err := http.DefaultClient.Do(req)
-		if resp.StatusCode != 200 {
+		resp, err := h.Do(req)
+		if resp.StatusCode >= 400 {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 			if resp.StatusCode == 401 {
