@@ -481,11 +481,9 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 	} else {
 		for _, f := range mdlInfo.Files {
 			for _, g := range glob {
-				m, err := filepath.Match(g, f)
-				if err != nil {
-					return nil, fmt.Errorf("glob %q is invalid: %w", g, err)
-				}
-				if m {
+				if m, err2 := filepath.Match(g, f); err2 != nil {
+					return nil, fmt.Errorf("glob %q is invalid: %w", g, err2)
+				} else if m {
 					desired = append(desired, f)
 					break
 				}
