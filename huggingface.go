@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log/slog"
 	"net/http"
 	"os"
@@ -30,9 +29,9 @@ import (
 //
 // The form is "hf:<author>/<repo>/HEAD/<file>"
 //
-// HEAD is the git commit reference. HEAD means the default branch. It can be
-// replaced with a branch name or a commit hash. The default branch used by
-// huggingface_hub official python library is "main".
+// HEAD is the git commit reference or "revision". HEAD means the default
+// branch. It can be replaced with a branch name or a commit hash. The default
+// branch used by huggingface_hub official python library is "main".
 //
 // DEFAULT_REVISION in
 // https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/constants.py
@@ -222,6 +221,8 @@ type Model struct {
 	Created time.Time
 	// Modified is the last time the repository was modified.
 	Modified time.Time
+	// SHA of the reference requested.
+	SHA string
 
 	_ struct{}
 }
@@ -299,20 +300,51 @@ func New(token string) (*Client, error) {
 
 // https://huggingface.co/docs/hub/api#get-apimodelsrepoid-or-apimodelsrepoidrevisionrevision
 type modelInfoResponse struct {
-	LastModified time.Time `json:"lastModified"`
-	Siblings     []struct {
-		Filename string `json:"rfilename"`
-	}
+	HiddenID string `json:"_id"`
+	Author   string `json:"author"`
 	CardData struct {
-		BaseModel  string `json:"base_model"`
-		License    string
-		LicenseURL string `json:"license_link"`
+		ExtraGatedButtonContent string         `json:"extra_gated_button_content"`
+		ExtraGatedDescription   string         `json:"extra_gated_description"`
+		ExtraGatedFields        map[string]any `json:"extra_gated_fields"`
+		ExtraGatedPrompt        string         `json:"extra_gated_prompt"`
+		Language                []string       `json:"language"`
+		LibraryName             string         `json:"library_name"`
+		License                 string         `json:"license"`
+		LicenseURL              string         `json:"license_link"`
+		PipelineTag             string         `json:"pipeline_tag"`
+		Tags                    []string       `json:"tags"`
+		BaseModel               string         `json:"base_model"`
+		Inference               struct {
+			Parameters struct {
+				Temperature int `json:"temperature"`
+			} `json:"parameters"`
+		} `json:"inference"`
 	} `json:"cardData"`
-	CreatedAt   time.Time `json:"createdAt"`
-	SafeTensors struct {
+	Config       map[string]any `json:"config"`
+	CreatedAt    time.Time      `json:"createdAt"`
+	Disabled     bool           `json:"disabled"`
+	Downloads    int64          `json:"downloads"`
+	Gates        string         `json:"gated"`
+	ID           string         `json:"id"`
+	LastModified time.Time      `json:"lastModified"`
+	LibraryName  string         `json:"library_name"`
+	Likes        int64          `json:"likes"`
+	ModelIndex   map[string]any `json:"model-index"`
+	ModelID      string         `json:"modelId"`
+	PipelineTag  string         `json:"pipeline_tag"`
+	Private      bool           `json:"private"`
+	SafeTensors  struct {
 		Parameters map[string]int64
 		Total      int64
 	} `json:"safetensors"`
+	SHA      string `json:"sha"`
+	Siblings []struct {
+		Filename string `json:"rfilename"`
+	}
+	Spaces          []string         `json:"spaces"`
+	Tags            []string         `json:"tags"`
+	TransformerInfo map[string]any   `json:"transformersInfo"`
+	WidgetData      []map[string]any `json:"widgetData"`
 }
 
 // GetModelInfo fills the supplied Model with information from the HuggingFace Hub.
@@ -328,15 +360,19 @@ func (c *Client) GetModelInfo(ctx context.Context, m *Model, ref string) error {
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to list repoID %s: %w", m.RepoID(), err)
+		return err
 	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
 	r := modelInfoResponse{}
-	if err := json.Unmarshal(b, &r); err != nil {
+	if err := d.Decode(&r); err != nil {
+		slog.Error("hf", "model", m.RepoID(), "data", string(b))
 		return fmt.Errorf("failed to parse list repoID %s response: %w", m.RepoID(), err)
 	}
 	m.Files = make([]string, len(r.Siblings))
 	m.Created = r.CreatedAt
 	m.Modified = r.LastModified
+	m.SHA = r.SHA
 	parts := strings.Split(r.CardData.BaseModel, "/")
 	if len(parts) == 2 {
 		m.Upstream.Author = parts[0]
@@ -359,34 +395,18 @@ func (c *Client) GetModelInfo(ctx context.Context, m *Model, ref string) error {
 	return nil
 }
 
-// for sha1 only.
-var reCommit = regexp.MustCompile("^[a-fA-F0-9]{40}$")
+var (
+	reSHA1   = regexp.MustCompile("^[a-fA-F0-9]{40}$")
+	reSHA256 = regexp.MustCompile("^[a-fA-F0-9]{64}$")
+)
 
 // EnsureFile ensures the file is available, downloads it otherwise.
 //
 // Similar to https://huggingface.co/docs/huggingface_hub/package_reference/file_download
 func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, error) {
-	// TODO: Currently hard-coded for models.
-	mdlDir, err := c.prepareModelCache(ref.RepoID())
+	mdlDir, commitish, err := c.resolveCommit(ctx, ref.ModelRef(), ref.Commitish())
 	if err != nil {
 		return "", err
-	}
-	// Look if there's a ref already there.
-	commitish := ""
-	etag := ""
-	cmtPath := filepath.Join(mdlDir, "refs", ref.Commitish())
-	if b, err := ioutil.ReadFile(cmtPath); err == nil {
-		commitish = string(bytes.TrimSpace(b))
-		if !reCommit.MatchString(commitish) {
-			return "", fmt.Errorf("%s contains %q which is not a commit hash", cmtPath, commitish)
-		}
-	} else {
-		if commitish, etag, _, err = c.GetFileInfo(ctx, ref); err != nil {
-			return "", err
-		}
-		if !reCommit.MatchString(commitish) {
-			return "", fmt.Errorf("%q is not a commit hash", commitish)
-		}
 	}
 	snapshotDir := filepath.Join(mdlDir, "snapshots", commitish)
 	if err = os.MkdirAll(snapshotDir, 0o777); err != nil {
@@ -394,13 +414,19 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 	}
 	// Symlink is present?
 	ln := filepath.Join(snapshotDir, ref.Basename())
-	if _, err := os.Stat(ln); err == nil {
+	if _, err = os.Stat(ln); err == nil {
 		slog.Info("hf", "ensure_file", ref, "commit", commitish, "ln", ln)
 		return ln, err
 	}
+
 	// We have to download it.
+	// TODO: Replace the revision with the one we found.
+	_, etag, _, err := c.GetFileInfo(ctx, ref)
+	if err != nil {
+		return "", err
+	}
 	blob := filepath.Join(mdlDir, "blobs", etag)
-	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + ref.Commitish() + "/" + ref.Basename() + "?download=true"
+	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + commitish + "/" + ref.Basename() + "?download=true"
 	if err = DownloadFile(ctx, url, blob, c.token); err != nil {
 		return "", err
 	}
@@ -414,6 +440,18 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 	return ln, nil
 }
 
+// EnsureSnapshot ensures files available from the snapshot, downloads them otherwise.
+//
+// Similar to
+// https://huggingface.co/docs/huggingface_hub/package_reference/file_download#huggingface_hub.snapshot_download
+func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision string, glob []string) ([]string, error) {
+	_, _, err := c.resolveCommit(ctx, ref, revision)
+	if err != nil {
+		return nil, err
+	}
+	return nil, errors.New("implement me")
+}
+
 // GetFileInfo retrieves the information about the file.
 //
 // Returns the commitish, etag, size.
@@ -425,7 +463,7 @@ func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, st
 		return "", "", 0, err
 	}
 	_, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	slog.Info("hf", "file_info", ref, "hdr", resp.Header)
 	commitIsh := resp.Header.Get("X-Repo-Commit")
 	if commitIsh == "" {
@@ -435,6 +473,10 @@ func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, st
 	etag := resp.Header.Get("X-Linked-Etag")
 	if etag == "" {
 		etag = resp.Header.Get("Etag")
+	}
+	// string.Trim(strings.TrimPrefix(etag, "W/"), "\"")
+	if !reSHA256.MatchString(etag) {
+		return "", "", 0, fmt.Errorf("expected sha256 for etag, got %q", etag)
 	}
 
 	sizeStr := resp.Header.Get("X-Linked-Size")
@@ -456,7 +498,8 @@ func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, st
 // prepareModelCache returns the absolute path to store the model's cache.
 //
 // Makes sure blobs/, refs/ and snapshots/ exist.
-func (c *Client) prepareModelCache(repoID string) (string, error) {
+func (c *Client) prepareModelCache(ref ModelRef) (string, error) {
+	repoID := ref.RepoID()
 	name := "models--" + strings.ReplaceAll(repoID, "/", "--")
 	mdlDir := filepath.Join(c.hubCacheDir, name)
 	for _, n := range []string{"blobs", "refs", "snapshots"} {
@@ -465,6 +508,34 @@ func (c *Client) prepareModelCache(repoID string) (string, error) {
 		}
 	}
 	return mdlDir, nil
+}
+
+func (c *Client) resolveCommit(ctx context.Context, ref ModelRef, commitish string) (string, string, error) {
+	// TODO: Currently hard-coded for models.
+	mdlDir, err := c.prepareModelCache(ref)
+	if err != nil {
+		return "", "", err
+	}
+	cmtPath := filepath.Join(mdlDir, "refs", commitish)
+	if b, err := os.ReadFile(cmtPath); err == nil {
+		commitish = string(bytes.TrimSpace(b))
+		if !reSHA1.MatchString(commitish) {
+			return "", "", fmt.Errorf("%s contains %q which is not a commit hash", cmtPath, commitish)
+		}
+	} else {
+		m := Model{ModelRef: ref}
+		if err = c.GetModelInfo(ctx, &m, commitish); err != nil {
+			return "", "", err
+		}
+		commitish = m.SHA
+		if !reSHA1.MatchString(commitish) {
+			return "", "", fmt.Errorf("%q is not a commit hash", commitish)
+		}
+		if err := os.WriteFile(cmtPath, []byte(m.SHA), 0o666); err != nil {
+			return "", "", err
+		}
+	}
+	return mdlDir, commitish, nil
 }
 
 //

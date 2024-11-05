@@ -193,6 +193,242 @@ var apiRepoPhi3Data = `
 }
 `
 
+func TestGetModelInfo_Llama(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/models/meta-llama/Llama-3.2-3B/revision/main" {
+			t.Errorf("unexpected path, got: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(apiRepoLlama3_2Data))
+	}))
+	defer server.Close()
+	os.Setenv("HF_HOME", t.TempDir())
+	c, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.serverBase = server.URL
+
+	got := Model{
+		ModelRef: ModelRef{
+			Author: "meta-llama",
+			Repo:   "Llama-3.2-3B",
+		},
+	}
+	if err := c.GetModelInfo(context.Background(), &got, "main"); err != nil {
+		t.Fatal(err)
+	}
+	// TODO: verify.
+}
+
+var apiRepoLlama3_2Data = `
+{
+    "_id": "66eaf084b3b3239188f66fa7",
+    "author": "meta-llama",
+    "cardData": {
+      "extra_gated_button_content": "Submit",
+      "extra_gated_description": "The information you provide will be collected, stored, processed and shared in accordance with the [Meta Privacy Policy](https://www.facebook.com/privacy/policy/).",
+      "extra_gated_fields": {
+        "Affiliation": "text",
+        "By clicking Submit below I accept the terms of the license and acknowledge that the information I provide will be collected stored processed and shared in accordance with the Meta Privacy Policy": "checkbox",
+        "Country": "country",
+        "Date of birth": "date_picker",
+        "First Name": "text",
+        "Job title": {
+          "options": [
+            "Student",
+            "Research Graduate",
+            "AI researcher",
+            "AI developer/engineer",
+            "Reporter",
+            "Other"
+          ],
+          "type": "select"
+        },
+        "Last Name": "text",
+        "geo": "ip_location"
+      },
+      "extra_gated_prompt": "### LLAMA 3.2 COMMUNITY LICENSE AGREEMENT\n\n blah blah",
+      "language": [
+        "en",
+        "de",
+        "fr",
+        "it",
+        "pt",
+        "hi",
+        "es",
+        "th"
+      ],
+      "library_name": "transformers",
+      "license": "llama3.2",
+      "pipeline_tag": "text-generation",
+      "tags": [
+        "facebook",
+        "meta",
+        "pytorch",
+        "llama",
+        "llama-3"
+      ]
+    },
+    "config": {
+      "architectures": [
+        "LlamaForCausalLM"
+      ],
+      "model_type": "llama",
+      "tokenizer_config": {
+        "bos_token": "\u003c|begin_of_text|\u003e",
+        "eos_token": "\u003c|end_of_text|\u003e"
+      }
+    },
+    "createdAt": "2024-09-18T15:23:48.000Z",
+    "disabled": false,
+    "downloads": 235716,
+    "gated": "manual",
+    "id": "meta-llama/Llama-3.2-3B",
+    "lastModified": "2024-10-24T15:07:40.000Z",
+    "library_name": "transformers",
+    "likes": 286,
+    "model-index": null,
+    "modelId": "meta-llama/Llama-3.2-3B",
+    "pipeline_tag": "text-generation",
+    "private": false,
+    "safetensors": {
+      "parameters": {
+        "BF16": 3212749824
+      },
+      "total": 3212749824
+    },
+    "sha": "13afe5124825b4f3751f836b40dafda64c1ed062",
+    "siblings": [
+      {
+        "rfilename": ".gitattributes"
+      },
+      {
+        "rfilename": "LICENSE.txt"
+      },
+      {
+        "rfilename": "README.md"
+      },
+      {
+        "rfilename": "USE_POLICY.md"
+      },
+      {
+        "rfilename": "config.json"
+      },
+      {
+        "rfilename": "generation_config.json"
+      },
+      {
+        "rfilename": "model-00001-of-00002.safetensors"
+      },
+      {
+        "rfilename": "model-00002-of-00002.safetensors"
+      },
+      {
+        "rfilename": "model.safetensors.index.json"
+      },
+      {
+        "rfilename": "original/consolidated.00.pth"
+      },
+      {
+        "rfilename": "original/params.json"
+      },
+      {
+        "rfilename": "original/tokenizer.model"
+      },
+      {
+        "rfilename": "special_tokens_map.json"
+      },
+      {
+        "rfilename": "tokenizer.json"
+      },
+      {
+        "rfilename": "tokenizer_config.json"
+      }
+    ],
+    "spaces": [
+      "allknowingroger/meta-llama-Llama-3.2-3B",
+      "Illia56/kotaemon-pro-Llama-3.2-3B",
+      "sakuexe/thesizer",
+      "IamVicky111/Psychiatrist_Bot",
+      "realmachas/meta-llama-Llama-3.2-3B",
+      "mtcporto/meta-llama-Llama-3.2-3B",
+      "Inaruss/meta-llama-Llama-3.2-3B",
+      "realaer/src",
+      "Depsa/meta-llama-Llama-3.2-3B",
+      "varun324242/meta-llama-Llama-3.2-3B",
+      "BICORP/meta-llama-Llama-3.2-3B",
+      "Woziii/LLMnBiasV2",
+      "TechXplorer/meta-llama-Llama-3.2-3B",
+      "Insikoorit/thesizer",
+      "skimike02/meta-llama-Llama-3.2-3B",
+      "DjDister/meta-llama-Llama-3.2-3B",
+      "IamVicky111/CalmCompass",
+      "jesuswithclinton/meta-llama-Llama-3.2-3B",
+      "laohan/mini_LAU",
+      "erstrik/meta-llama-Llama-3.2-3B",
+      "Joaovsales/astro",
+      "sunitbana/meta"
+    ],
+    "tags": [
+      "transformers",
+      "safetensors",
+      "llama",
+      "text-generation",
+      "facebook",
+      "meta",
+      "pytorch",
+      "llama-3",
+      "en",
+      "de",
+      "fr",
+      "it",
+      "pt",
+      "hi",
+      "es",
+      "th",
+      "arxiv:2204.05149",
+      "arxiv:2405.16406",
+      "license:llama3.2",
+      "autotrain_compatible",
+      "text-generation-inference",
+      "endpoints_compatible",
+      "region:us"
+    ],
+    "transformersInfo": {
+      "auto_model": "AutoModelForCausalLM",
+      "pipeline_tag": "text-generation",
+      "processor": "AutoTokenizer"
+    },
+    "widgetData": [
+      {
+        "text": "My name is Julien and I like to"
+      },
+      {
+        "text": "My name is Thomas and my main"
+      },
+      {
+        "text": "My name is Mariama, my favorite"
+      },
+      {
+        "text": "My name is Clara and I am"
+      },
+      {
+        "text": "My name is Lewis and I like to"
+      },
+      {
+        "text": "My name is Merve and my favorite"
+      },
+      {
+        "text": "My name is Teven and I am"
+      },
+      {
+        "text": "Once upon a time,"
+      }
+    ]
+  }
+`
+
 // TestMain sets up the verbose logging.
 func TestMain(m *testing.M) {
 	flag.Parse()
