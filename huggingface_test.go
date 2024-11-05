@@ -45,14 +45,15 @@ func TestPackedFileRef(t *testing.T) {
 
 func TestGetModelInfo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/models/microsoft/Phi-3-mini-4k-instruct/revision/HEAD" {
+		if r.URL.Path != "/api/models/microsoft/Phi-3-mini-4k-instruct/revision/main" {
 			t.Errorf("unexpected path, got: %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(apiRepoPhi3Data))
 	}))
 	defer server.Close()
-	c, err := New("", t.TempDir())
+	os.Setenv("HF_HOME", t.TempDir())
+	c, err := New("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +65,7 @@ func TestGetModelInfo(t *testing.T) {
 			Repo:   "Phi-3-mini-4k-instruct",
 		},
 	}
-	if err := c.GetModelInfo(context.Background(), &got); err != nil {
+	if err := c.GetModelInfo(context.Background(), &got, "main"); err != nil {
 		t.Fatal(err)
 	}
 	want := Model{
@@ -202,5 +203,9 @@ func TestMain(m *testing.M) {
 		NoColor:    !isatty.IsTerminal(os.Stderr.Fd()),
 	}))
 	slog.SetDefault(logger)
+	os.Unsetenv("HF_HOME")
+	os.Unsetenv("HF_HUB_CACHE")
+	os.Unsetenv("HF_TOKEN")
+	os.Unsetenv("HF_TOKEN_PATH")
 	os.Exit(m.Run())
 }
