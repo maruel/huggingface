@@ -37,6 +37,11 @@ import (
 // https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/constants.py
 type PackedFileRef string
 
+// MakePackedFileRef returns a PackedFileRef
+func MakePackedFileRef(author, repo, revision, file string) PackedFileRef {
+	return PackedFileRef("hf:" + author + "/" + repo + "/" + revision + "/" + file)
+}
+
 // RepoID returns the canonical "<author>/<repo>" for this repository.
 func (p PackedFileRef) RepoID() string {
 	s := string(p)
@@ -91,8 +96,15 @@ func (p PackedFileRef) ModelRef() ModelRef {
 
 // Basename returns the basename part of this reference.
 func (p PackedFileRef) Basename() string {
-	if i := strings.LastIndexByte(string(p), '/'); i != -1 {
-		return string(p)[i+1:]
+	s := string(p)
+	if i := strings.IndexByte(s, '/'); i != -1 {
+		s = s[i+1:]
+		if i = strings.IndexByte(s, '/'); i != -1 {
+			s = s[i+1:]
+			if i = strings.IndexByte(s, '/'); i != -1 {
+				return s[i+1:]
+			}
+		}
 	}
 	return ""
 }
@@ -108,7 +120,7 @@ func (p PackedFileRef) Validate() error {
 		return fmt.Errorf("invalid file ref %q", p)
 	}
 	parts := strings.Split(string(p)[4:], "/")
-	if len(parts) != 4 {
+	if len(parts) < 4 {
 		return fmt.Errorf("invalid file ref %q", p)
 	}
 	if len(parts[2]) == 0 {
@@ -404,10 +416,13 @@ var (
 //
 // Similar to https://huggingface.co/docs/huggingface_hub/package_reference/file_download
 func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, error) {
-	mdlDir, commitish, err := c.resolveCommit(ctx, ref.ModelRef(), ref.Commitish())
+	mdlDir, commitish, mdlInfo, err := c.resolveCommit(ctx, ref.ModelRef(), ref.Commitish())
 	if err != nil {
 		return "", err
 	}
+	ref = MakePackedFileRef(ref.Author(), ref.Repo(), commitish, ref.Basename())
+	// Replace the revision with the one we found.
+	_ = mdlInfo
 	snapshotDir := filepath.Join(mdlDir, "snapshots", commitish)
 	if err = os.MkdirAll(snapshotDir, 0o777); err != nil {
 		return "", err
@@ -420,7 +435,6 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 	}
 
 	// We have to download it.
-	// TODO: Replace the revision with the one we found.
 	_, etag, _, err := c.GetFileInfo(ctx, ref)
 	if err != nil {
 		return "", err
@@ -445,10 +459,13 @@ func (c *Client) EnsureFile(ctx context.Context, ref PackedFileRef) (string, err
 // Similar to
 // https://huggingface.co/docs/huggingface_hub/package_reference/file_download#huggingface_hub.snapshot_download
 func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision string, glob []string) ([]string, error) {
-	_, _, err := c.resolveCommit(ctx, ref, revision)
+	mdlDir, commitish, mdlInfo, err := c.resolveCommit(ctx, ref, revision)
 	if err != nil {
 		return nil, err
 	}
+	_ = mdlDir
+	_ = commitish
+	_ = mdlInfo
 	return nil, errors.New("implement me")
 }
 
@@ -470,7 +487,6 @@ func (c *Client) GetFileInfo(ctx context.Context, ref PackedFileRef) (string, st
 	}
 	_, _ = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	slog.Info("hf", "file_info", ref, "hdr", resp.Header)
 	commitIsh := resp.Header.Get("X-Repo-Commit")
 	if commitIsh == "" {
 		return "", "", 0, errors.New("missing header X-Repo-Commit")
@@ -514,32 +530,34 @@ func (c *Client) prepareModelCache(ref ModelRef) (string, error) {
 	return mdlDir, nil
 }
 
-func (c *Client) resolveCommit(ctx context.Context, ref ModelRef, commitish string) (string, string, error) {
-	// TODO: Currently hard-coded for models.
+func (c *Client) resolveCommit(ctx context.Context, ref ModelRef, commitish string) (string, string, *Model, error) {
+	// TODO: Currently hard-coded for models. Add datasets and spaces later.
+	// See https://huggingface.co/docs/huggingface_hub/guides/manage-cache
 	mdlDir, err := c.prepareModelCache(ref)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	cmtPath := filepath.Join(mdlDir, "refs", commitish)
+	var m *Model
 	if b, err := os.ReadFile(cmtPath); err == nil {
 		commitish = string(bytes.TrimSpace(b))
 		if !reSHA1.MatchString(commitish) {
-			return "", "", fmt.Errorf("%s contains %q which is not a commit hash", cmtPath, commitish)
+			return "", "", nil, fmt.Errorf("%s contains %q which is not a commit hash", cmtPath, commitish)
 		}
 	} else {
-		m := Model{ModelRef: ref}
-		if err = c.GetModelInfo(ctx, &m, commitish); err != nil {
-			return "", "", err
+		m = &Model{ModelRef: ref}
+		if err = c.GetModelInfo(ctx, m, commitish); err != nil {
+			return "", "", nil, err
 		}
 		commitish = m.SHA
 		if !reSHA1.MatchString(commitish) {
-			return "", "", fmt.Errorf("%q is not a commit hash", commitish)
+			return "", "", nil, fmt.Errorf("%q is not a commit hash", commitish)
 		}
 		if err := os.WriteFile(cmtPath, []byte(m.SHA), 0o666); err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
 	}
-	return mdlDir, commitish, nil
+	return mdlDir, commitish, m, nil
 }
 
 //

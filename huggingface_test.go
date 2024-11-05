@@ -22,7 +22,7 @@ import (
 )
 
 func TestPackedFileRef(t *testing.T) {
-	p := PackedFileRef("hf:author/repo/HEAD/file")
+	p := PackedFileRef("hf:author/repo/HEAD/dir/file")
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestPackedFileRef(t *testing.T) {
 	if got := p.Repo(); got != "repo" {
 		t.Fatal(got)
 	}
-	if got := p.Basename(); got != "file" {
+	if got := p.Basename(); got != "dir/file" {
 		t.Fatal(got)
 	}
 	if got := p.Commitish(); got != "HEAD" {
