@@ -214,7 +214,7 @@ type modelInfoResponse struct {
 func (c *Client) GetModelInfo(ctx context.Context, m *Model, ref string) error {
 	slog.Info("hf", "model", m.RepoID())
 	url := c.serverBase + "/api/models/" + m.RepoID() + "/revision/" + ref
-	resp, err := authGet(ctx, http.DefaultClient, "GET", url, c.token, nil)
+	resp, err := AuthRequest(ctx, http.DefaultClient, "GET", url, c.token, nil)
 	if err != nil {
 		return fmt.Errorf("failed to list repoID %s: %w", m.RepoID(), err)
 	}
@@ -296,7 +296,7 @@ func (c *Client) EnsureFile(ctx context.Context, ref ModelRef, revision, file st
 	blob := filepath.Join(mdlDir, "blobs", etag)
 	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + commitish + "/" + file + "?download=true"
 	// TODO: filepath.Join(c.hubCacheDir, ".locks", modelPath, etag + ".lock")
-	if err = DownloadFile(ctx, url, blob, c.token); err != nil {
+	if err = downloadFile(ctx, url, blob, c.token); err != nil {
 		return "", err
 	}
 	rel, err := filepath.Rel(filepath.Dir(ln), blob)
@@ -366,7 +366,7 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 			blob := filepath.Join(mdlDir, "blobs", etag)
 			url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + commitish + "/" + f + "?download=true"
 			// TODO: filepath.Join(c.hubCacheDir, ".locks", modelPath, etag + ".lock")
-			if err = DownloadFile(ctx, url, blob, c.token); err != nil {
+			if err = downloadFile(ctx, url, blob, c.token); err != nil {
 				return nil, err
 			}
 			rel, err := filepath.Rel(filepath.Dir(ln), blob)
@@ -395,7 +395,7 @@ func (c *Client) GetFileInfo(ctx context.Context, ref ModelRef, revision, file s
 			return http.ErrUseLastResponse
 		},
 	}
-	resp, err := authGet(ctx, &h, "HEAD", url, c.token, hdr)
+	resp, err := AuthRequest(ctx, &h, "HEAD", url, c.token, hdr)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -476,13 +476,13 @@ func (c *Client) resolveCommit(ctx context.Context, ref ModelRef, commitish stri
 
 //
 
-// DownloadFile downloads a file optionally with a bearer token.
+// downloadFile downloads a file optionally with a bearer token.
 //
 // This is a generic utility function. It retries 429 and 5xx automatically.
 //
 // It prints a progress bar if the file is at least 100kiB.
-func DownloadFile(ctx context.Context, url, dst string, token string) error {
-	resp, err := authGet(ctx, http.DefaultClient, "GET", url, token, nil)
+func downloadFile(ctx context.Context, url, dst string, token string) error {
+	resp, err := AuthRequest(ctx, http.DefaultClient, "GET", url, token, nil)
 	if err != nil {
 		return fmt.Errorf("failed to download %q: %w", dst, err)
 	}
@@ -504,10 +504,13 @@ func DownloadFile(ctx context.Context, url, dst string, token string) error {
 	return err
 }
 
-// authGet does an authenticated HTTP request with a Bearer token.
+// AuthRequest does an authenticated HTTP request with a Bearer token, which retries automatically 429 and 5xx.
 //
 // Method must be HEAD or GET.
-func authGet(ctx context.Context, h *http.Client, method, url, token string, hdr map[string]string) (*http.Response, error) {
+func AuthRequest(ctx context.Context, h *http.Client, method, url, token string, hdr map[string]string) (*http.Response, error) {
+	if method != "HEAD" && method != "GET" {
+		return nil, fmt.Errorf("unsupported method %s", method)
+	}
 	slog.Info("hf", method, url)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
