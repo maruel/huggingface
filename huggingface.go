@@ -496,7 +496,7 @@ func downloadFile(ctx context.Context, url, dst string, token string) error {
 
 	// Check if resp.ContentLength is small and skip output in this case.
 	if resp.ContentLength == 0 || resp.ContentLength >= 100*1024 {
-		bar := progressbar.DefaultBytes(resp.ContentLength, "downloading")
+		bar := progressbar.DefaultBytes(resp.ContentLength, filepath.Base(dst))
 		_, err = io.Copy(io.MultiWriter(f, bar), resp.Body)
 	} else {
 		_, err = io.Copy(f, resp.Body)
