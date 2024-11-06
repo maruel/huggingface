@@ -155,31 +155,37 @@ func New(token string) (*Client, error) {
 
 // https://huggingface.co/docs/hub/api#get-apimodelsrepoid-or-apimodelsrepoidrevisionrevision
 type modelInfoResponse struct {
-	HiddenID string `json:"_id"`
-	Author   string `json:"author"`
-	CardData struct {
-		ExtraGatedButtonContent string         `json:"extra_gated_button_content"`
-		ExtraGatedDescription   string         `json:"extra_gated_description"`
-		ExtraGatedFields        map[string]any `json:"extra_gated_fields"`
-		ExtraGatedPrompt        string         `json:"extra_gated_prompt"`
-		Language                []string       `json:"language"`
-		LibraryName             string         `json:"library_name"`
-		License                 string         `json:"license"`
-		LicenseURL              string         `json:"license_link"`
-		PipelineTag             string         `json:"pipeline_tag"`
-		Tags                    []string       `json:"tags"`
-		BaseModel               string         `json:"base_model"`
-		Inference               struct {
-			Parameters struct {
-				Temperature int `json:"temperature"`
-			} `json:"parameters"`
-		} `json:"inference"`
-	} `json:"cardData"`
+	HiddenID string         `json:"_id"`
+	Author   string         `json:"author"`
+	CardData map[string]any `json:"cardData"`
+	/*
+		CardData struct {
+			ExtraGatedButtonContent string         `json:"extra_gated_button_content"`
+			ExtraGatedDescription   string         `json:"extra_gated_description"`
+			ExtraGatedFields        map[string]any `json:"extra_gated_fields"`
+			ExtraGatedPrompt        string         `json:"extra_gated_prompt"`
+			Language                []string       `json:"language"`
+			LibraryName             string         `json:"library_name"`
+			License                 string         `json:"license"`
+			LicenseURL              string         `json:"license_link"`
+			PipelineTag             string         `json:"pipeline_tag"`
+			Tags                    []string       `json:"tags"`
+			BaseModel               string         `json:"base_model"`
+			QuantizedBy             string         `json:"quantized_by"`
+			Inference               struct {
+				Parameters struct {
+					Temperature int `json:"temperature"`
+				} `json:"parameters"`
+				Widget map[string]any `json:"widget"`
+			} `json:"inference"`
+		} `json:"cardData"`
+	*/
 	Config       map[string]any `json:"config"`
 	CreatedAt    time.Time      `json:"createdAt"`
 	Disabled     bool           `json:"disabled"`
 	Downloads    int64          `json:"downloads"`
 	Gated        any            `json:"gated"` // Sometimes bool (Qwen2), sometimes string (Llama 3.2)
+	GGUF         map[string]any `json:"gguf"`
 	ID           string         `json:"id"`
 	LastModified time.Time      `json:"lastModified"`
 	LibraryName  string         `json:"library_name"`
@@ -221,6 +227,12 @@ func (c *Client) GetModelInfo(ctx context.Context, m *Model, ref string) error {
 	d.DisallowUnknownFields()
 	r := modelInfoResponse{}
 	if err := d.Decode(&r); err != nil {
+		/* For debugging:
+		tmpData := map[string]any{}
+		_ = json.Unmarshal(b, &tmpData)
+		tmp, _ := json.MarshalIndent(tmpData, "  ", "  ")
+		fmt.Printf("%s\n", string(tmp))
+		*/
 		slog.Error("hf", "model", m.RepoID(), "data", string(b))
 		return fmt.Errorf("failed to parse list repoID %s response: %w", m.RepoID(), err)
 	}
@@ -228,13 +240,14 @@ func (c *Client) GetModelInfo(ctx context.Context, m *Model, ref string) error {
 	m.Created = r.CreatedAt
 	m.Modified = r.LastModified
 	m.SHA = r.SHA
-	parts := strings.Split(r.CardData.BaseModel, "/")
+	bm, _ := r.CardData["base_model"].(string)
+	parts := strings.Split(bm, "/")
 	if len(parts) == 2 {
 		m.Upstream.Author = parts[0]
 		m.Upstream.Repo = parts[1]
 	}
-	m.License = r.CardData.License
-	m.LicenseURL = r.CardData.LicenseURL
+	m.License, _ = r.CardData["license"].(string)
+	m.LicenseURL, _ = r.CardData["license_link"].(string)
 	for i := range r.Siblings {
 		m.Files[i] = r.Siblings[i].Filename
 	}
