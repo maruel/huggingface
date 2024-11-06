@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/schollz/progressbar/v3"
+	"golang.org/x/sync/errgroup"
 )
 
 // ModelRef is a reference to a model stored on https://huggingface.co
@@ -312,6 +313,8 @@ func (c *Client) EnsureFile(ctx context.Context, ref ModelRef, revision, file st
 
 // EnsureSnapshot ensures files available from the snapshot, downloads them otherwise.
 //
+// Downloads files concurrently.
+//
 // Similar to
 // https://huggingface.co/docs/huggingface_hub/package_reference/file_download#huggingface_hub.snapshot_download
 func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision string, glob []string) ([]string, error) {
@@ -353,32 +356,70 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 	if err = os.MkdirAll(snapshotDir, 0o777); err != nil {
 		return nil, err
 	}
-	// TODO: Download 4 files simultaneously.
-	var out []string
+
+	type missing struct {
+		name string
+		ln   string
+		blob string
+		etag string
+		size int64
+	}
+	out := make([]string, 0, len(desired))
+	var missings []missing
+	var total int64
 	for _, f := range desired {
 		ln := filepath.Join(snapshotDir, f)
 		if _, err = os.Stat(ln); err != nil {
-			// We have to download it.
-			_, etag, _, err := c.GetFileInfo(ctx, ref, commitish, f)
+			// We'll have to download it.
+			_, etag, size, err := c.GetFileInfo(ctx, ref, commitish, f)
 			if err != nil {
 				return nil, err
 			}
 			blob := filepath.Join(mdlDir, "blobs", etag)
-			url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + commitish + "/" + f + "?download=true"
-			// TODO: filepath.Join(c.hubCacheDir, ".locks", modelPath, etag + ".lock")
-			if err = downloadFile(ctx, url, blob, c.token); err != nil {
-				return nil, err
-			}
-			rel, err := filepath.Rel(filepath.Dir(ln), blob)
-			if err != nil {
-				return nil, err
-			}
-			// TODO: subdirectories.
-			if err = os.Symlink(rel, ln); err != nil {
-				return nil, err
-			}
+			missings = append(missings, missing{f, ln, blob, etag, size})
+			total += size
 		}
 		out = append(out, ln)
+	}
+
+	bar := progressbar.DefaultBytes(total, "downloading")
+	eg, ctx := errgroup.WithContext(ctx)
+	// Limit for 4 concurrently.
+	limit := make(chan struct{}, 4)
+	for _, m := range missings {
+		eg.Go(func() error {
+			url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + commitish + "/" + m.name + "?download=true"
+			limit <- struct{}{}
+			defer func() {
+				<-limit
+			}()
+			resp, err := AuthRequest(ctx, http.DefaultClient, "GET", url, c.token, nil)
+			if err != nil {
+				return fmt.Errorf("failed to download %q: %w", m.blob, err)
+			}
+			defer resp.Body.Close()
+			// Only then create the file.
+			// TODO: filepath.Join(c.hubCacheDir, ".locks", modelPath, etag + ".lock")
+			f, err := os.OpenFile(m.blob, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
+			if err != nil {
+				return fmt.Errorf("failed to download %q: %w", m.blob, err)
+			}
+			defer f.Close()
+
+			_, err = io.Copy(io.MultiWriter(f, bar), resp.Body)
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(filepath.Dir(m.ln), m.blob)
+			if err != nil {
+				return err
+			}
+			// TODO: subdirectories.
+			return os.Symlink(rel, m.ln)
+		})
+	}
+	if err = eg.Wait(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
