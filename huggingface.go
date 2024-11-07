@@ -311,6 +311,39 @@ func (c *Client) EnsureFile(ctx context.Context, ref ModelRef, revision, file st
 	return ln, nil
 }
 
+type missing struct {
+	name string
+	ln   string
+	blob string
+	etag string
+	size int64
+}
+
+func (c *Client) fetchMissing(ctx context.Context, ref ModelRef, commitish string, m missing, bar io.Writer) error {
+	url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + commitish + "/" + m.name + "?download=true"
+	resp, err := AuthRequest(ctx, http.DefaultClient, "GET", url, c.token, nil)
+	if err != nil {
+		return fmt.Errorf("failed to download %q: %w", m.blob, err)
+	}
+	defer resp.Body.Close()
+	// Only then create the file.
+	// TODO: filepath.Join(c.hubCacheDir, ".locks", modelPath, etag + ".lock")
+	f, err := os.OpenFile(m.blob, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
+	if err != nil {
+		return fmt.Errorf("failed to download %q: %w", m.blob, err)
+	}
+	defer f.Close()
+	if _, err = io.Copy(io.MultiWriter(f, bar), resp.Body); err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(filepath.Dir(m.ln), m.blob)
+	if err != nil {
+		return err
+	}
+	// TODO: subdirectories.
+	return os.Symlink(rel, m.ln)
+}
+
 // EnsureSnapshot ensures files available from the snapshot, downloads them otherwise.
 //
 // Downloads files concurrently.
@@ -357,13 +390,6 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 		return nil, err
 	}
 
-	type missing struct {
-		name string
-		ln   string
-		blob string
-		etag string
-		size int64
-	}
 	out := make([]string, 0, len(desired))
 	var missings []missing
 	var total int64
@@ -371,9 +397,9 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 		ln := filepath.Join(snapshotDir, f)
 		if _, err = os.Stat(ln); err != nil {
 			// We'll have to download it.
-			_, etag, size, err := c.GetFileInfo(ctx, ref, commitish, f)
-			if err != nil {
-				return nil, err
+			_, etag, size, err2 := c.GetFileInfo(ctx, ref, commitish, f)
+			if err2 != nil {
+				return nil, err2
 			}
 			blob := filepath.Join(mdlDir, "blobs", etag)
 			missings = append(missings, missing{f, ln, blob, etag, size})
@@ -388,34 +414,11 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 	limit := make(chan struct{}, 4)
 	for _, m := range missings {
 		eg.Go(func() error {
-			url := c.serverBase + "/" + ref.RepoID() + "/resolve/" + commitish + "/" + m.name + "?download=true"
 			limit <- struct{}{}
 			defer func() {
 				<-limit
 			}()
-			resp, err := AuthRequest(ctx, http.DefaultClient, "GET", url, c.token, nil)
-			if err != nil {
-				return fmt.Errorf("failed to download %q: %w", m.blob, err)
-			}
-			defer resp.Body.Close()
-			// Only then create the file.
-			// TODO: filepath.Join(c.hubCacheDir, ".locks", modelPath, etag + ".lock")
-			f, err := os.OpenFile(m.blob, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
-			if err != nil {
-				return fmt.Errorf("failed to download %q: %w", m.blob, err)
-			}
-			defer f.Close()
-
-			_, err = io.Copy(io.MultiWriter(f, bar), resp.Body)
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(filepath.Dir(m.ln), m.blob)
-			if err != nil {
-				return err
-			}
-			// TODO: subdirectories.
-			return os.Symlink(rel, m.ln)
+			return c.fetchMissing(ctx, ref, commitish, m, bar)
 		})
 	}
 	if err = eg.Wait(); err != nil {
