@@ -408,21 +408,27 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 		out = append(out, ln)
 	}
 
-	bar := progressbar.DefaultBytes(total, "downloading")
-	eg, ctx := errgroup.WithContext(ctx)
-	// Limit for 4 concurrently.
-	limit := make(chan struct{}, 4)
-	for _, m := range missings {
-		eg.Go(func() error {
-			limit <- struct{}{}
-			defer func() {
-				<-limit
-			}()
-			return c.fetchMissing(ctx, ref, commitish, m, bar)
-		})
-	}
-	if err = eg.Wait(); err != nil {
-		return nil, err
+	if len(missings) != 0 {
+		title := fmt.Sprintf("downloading (%d)", len(missings))
+		if len(missings) == 1 {
+			title = filepath.Base(missings[0].name)
+		}
+		bar := progressbar.DefaultBytes(total, title)
+		eg, ctx := errgroup.WithContext(ctx)
+		// Limit for 4 concurrently.
+		limit := make(chan struct{}, 4)
+		for _, m := range missings {
+			eg.Go(func() error {
+				limit <- struct{}{}
+				defer func() {
+					<-limit
+				}()
+				return c.fetchMissing(ctx, ref, commitish, m, bar)
+			})
+		}
+		if err = eg.Wait(); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
