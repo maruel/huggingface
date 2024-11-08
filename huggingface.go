@@ -339,7 +339,7 @@ func makeSnapshotSymlink(snapshotDir, file, blob string) error {
 		return err
 	}
 	if d := filepath.Dir(file); d != "" {
-		if err = os.MkdirAll(filepath.Join(ln, d), 0o777); err != nil {
+		if err = os.MkdirAll(filepath.Join(snapshotDir, d), 0o777); err != nil {
 			return err
 		}
 	}
