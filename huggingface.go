@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maruel/safetensors"
 	"github.com/schollz/progressbar/v3"
 	"golang.org/x/sync/errgroup"
 )
@@ -54,9 +55,9 @@ type Model struct {
 
 	// Information filled by GetModel():
 
-	// Tensor is the native quantization of the weight. Frequently "BF16" for
-	// "bfloat16" type. This is found in config.json in Upstream.
-	TensorType string
+	// Tensor is the native quantization of the weight. This is found in
+	// config.json in Upstream.
+	TensorType safetensors.DType
 	// Number of weights. Has direct impact on performance and memory usage.
 	NumWeights int64
 	// ContentLength is the number of tokens that the LLM can take as context
@@ -191,12 +192,12 @@ type modelInfoResponse struct {
 	LastModified time.Time      `json:"lastModified"`
 	LibraryName  string         `json:"library_name"`
 	Likes        int64          `json:"likes"`
-	ModelIndex   map[string]any `json:"model-index"`
+	ModelIndex   []any          `json:"model-index"`
 	ModelID      string         `json:"modelId"`
 	PipelineTag  string         `json:"pipeline_tag"`
 	Private      bool           `json:"private"`
 	SafeTensors  struct {
-		Parameters map[string]int64
+		Parameters map[safetensors.DType]int64
 		Total      int64
 	} `json:"safetensors"`
 	SHA      string `json:"sha"`

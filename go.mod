@@ -1,10 +1,11 @@
 module github.com/maruel/huggingface
 
-go 1.23.1
+go 1.23.3
 
 require (
 	github.com/google/go-cmp v0.6.0
 	github.com/lmittmann/tint v1.0.5
+	github.com/maruel/safetensors v0.0.0-20241107170138-b9ca237bcd8b
 	github.com/mattn/go-colorable v0.1.13
 	github.com/mattn/go-isatty v0.0.20
 	github.com/schollz/progressbar/v3 v3.17.0
