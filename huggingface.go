@@ -301,23 +301,15 @@ func (c *Client) EnsureFile(ctx context.Context, ref ModelRef, revision, file st
 	if err = downloadFile(ctx, url, blob, c.token); err != nil {
 		return "", err
 	}
-	rel, err := filepath.Rel(filepath.Dir(ln), blob)
-	if err != nil {
-		return "", err
-	}
-	// TODO: subdirectories.
-	if err = os.Symlink(rel, ln); err != nil {
-		return "", err
-	}
-	return ln, nil
+	return ln, makeSnapshotSymlink(snapshotDir, file, blob)
 }
 
 type missing struct {
-	name string
-	ln   string
-	blob string
-	etag string
-	size int64
+	name        string
+	snapshotDir string
+	blob        string
+	etag        string
+	size        int64
 }
 
 func (c *Client) fetchMissing(ctx context.Context, ref ModelRef, commitish string, m missing, bar io.Writer) error {
@@ -337,12 +329,21 @@ func (c *Client) fetchMissing(ctx context.Context, ref ModelRef, commitish strin
 	if _, err = io.Copy(io.MultiWriter(f, bar), resp.Body); err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(filepath.Dir(m.ln), m.blob)
+	return makeSnapshotSymlink(m.snapshotDir, m.name, m.blob)
+}
+
+func makeSnapshotSymlink(snapshotDir, file, blob string) error {
+	ln := filepath.Join(snapshotDir, file)
+	rel, err := filepath.Rel(filepath.Dir(ln), blob)
 	if err != nil {
 		return err
 	}
-	// TODO: subdirectories.
-	return os.Symlink(rel, m.ln)
+	if d := filepath.Dir(file); d != "" {
+		if err = os.MkdirAll(filepath.Join(ln, d), 0o777); err != nil {
+			return err
+		}
+	}
+	return os.Symlink(rel, ln)
 }
 
 // EnsureSnapshot ensures files available from the snapshot, downloads them otherwise.
@@ -403,7 +404,7 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 				return nil, err2
 			}
 			blob := filepath.Join(mdlDir, "blobs", etag)
-			missings = append(missings, missing{f, ln, blob, etag, size})
+			missings = append(missings, missing{f, snapshotDir, blob, etag, size})
 			total += size
 		}
 		out = append(out, ln)
@@ -415,7 +416,7 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 			title = filepath.Base(missings[0].name)
 		}
 		bar := progressbar.DefaultBytes(total, title)
-		eg, ctx := errgroup.WithContext(ctx)
+		eg, ctx2 := errgroup.WithContext(ctx)
 		// Limit for 4 concurrently.
 		limit := make(chan struct{}, 4)
 		for _, m := range missings {
@@ -424,7 +425,7 @@ func (c *Client) EnsureSnapshot(ctx context.Context, ref ModelRef, revision stri
 				defer func() {
 					<-limit
 				}()
-				return c.fetchMissing(ctx, ref, commitish, m, bar)
+				return c.fetchMissing(ctx2, ref, commitish, m, bar)
 			})
 		}
 		if err = eg.Wait(); err != nil {
