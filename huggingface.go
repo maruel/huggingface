@@ -208,6 +208,7 @@ type modelInfoResponse struct {
 	Tags            []string         `json:"tags"`
 	TransformerInfo map[string]any   `json:"transformersInfo"`
 	WidgetData      []map[string]any `json:"widgetData"`
+	UsedStorage     int64            `json:"usedStorage"`
 }
 
 // GetModelInfo fills the supplied Model with information from the HuggingFace Hub.
@@ -476,7 +477,7 @@ func (c *Client) GetFileInfo(ctx context.Context, ref ModelRef, revision, file s
 	if err != nil {
 		return "", "", 0, fmt.Errorf("invalid header X-Linked-Size %q", sizeStr)
 	}
-	//resp.Header.Get("Location") or url
+	// resp.Header.Get("Location") or url
 	slog.Info("hf", "file_info", ref, "commit", commitIsh, "etag", etag, "size", size)
 	return commitIsh, etag, size, nil
 }
